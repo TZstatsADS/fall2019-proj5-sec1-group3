@@ -1,0 +1,174 @@
+---
+title: "Song Lyrics Data Story"
+author: "Daniel Weiss, dmw2180"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Step 0: Load Libraries
+```{r load libraries, warning=FALSE, message=FALSE,echo=FALSE}
+library(tidyverse)
+library(tidytext)
+library(plotly)
+library(DT)
+library(tm)
+library(data.table)
+library(scales)
+library(wordcloud)
+library(gridExtra)
+library(ngram)
+library(dplyr)
+library(janeaustenr)
+library(textdata)
+library(igraph)
+library(ggraph)
+library(wordcloud2)
+library(reshape2)
+library(sentimentr)
+library(syuzhet)
+library(factoextra)
+library(ggpubr)
+library(ggplot2)
+
+
+word_count=function(str){
+  library(stringr)
+  return(str_count(str, '\\w+'))
+}
+
+
+```
+
+#Step 1: Load Data
+```{r load data, warning=FALSE, message=FALSE}
+# load lyrics data
+load('../output/processed_lyrics.RData')
+genre_list <- c("Country", "Electronic", "Folk", "Hip-Hop", "Indie", "Jazz", "Metal", "Pop", "Rock", "R&B", "Other")
+
+dt_lyrics$words = word_count(dt_lyrics$lyrics)
+dt_lyrics.emo=filter(dt_lyrics, 
+                     genre%in%genre_list) %>%
+              filter(year>=1967)
+
+```
+
+
+#Step 2: Organize Data for Charts
+```{r organize data, warning=FALSE, message=FALSE}
+
+dt_lyrics.emo$genre=factor(dt_lyrics.emo$genre)
+dt_lyrics.emo$genreOrdered=reorder(dt_lyrics.emo$genre, 
+                                  dt_lyrics.emo$words, 
+                                  mean, 
+                                  order=T)
+
+lyrics.list=NULL
+for(i in 1:nrow(dt_lyrics.emo)){
+  lyrics=dt_lyrics.emo$lyrics[i]
+  if(dt_lyrics.emo$words[i]>0){
+    emotions=get_nrc_sentiment(lyrics)
+    emotions=as.matrix(emotions)/dt_lyrics.emo$words[i]
+    lyrics.list=rbind(lyrics.list, 
+                        cbind(dt_lyrics.emo[i,],
+                              emotions))
+  }
+}
+
+lyr_emo.summary=tbl_df(lyrics.list)%>%
+  group_by(genre)%>%
+  summarise(
+    anger=mean(anger),
+    anticipation=mean(anticipation),
+    disgust=mean(disgust),
+    fear=mean(fear),
+    joy=mean(joy),
+    sadness=mean(sadness),
+    surprise=mean(surprise),
+    trust=mean(trust)
+  )
+
+lyr_emo1.summary=tbl_df(lyrics.list)%>%
+  group_by(genre)%>%
+  summarise(
+    negative=mean(negative),
+    positive=mean(positive)
+  )
+lyr_emo1.summary[,2]<-lyr_emo1.summary[,2]*-1
+
+```
+
+```{r wordcloud setup, message=FALSE, echo=FALSE}
+corpus <- VCorpus((VectorSource(dt_lyrics$stemmedwords)))
+dtm <- DocumentTermMatrix(corpus,control = list(bounds=list(global=c(5,Inf)),removeNumbers=T, weighting=weightTf))
+tidy_dtm = tidy(dtm)
+word_mapping <- summarise(group_by(tidy_dtm, term), n=sum(count))
+
+```
+
+#Step 3: Word Cloud
+#Daniel Weiss
+#Applied Data Science
+#Project 5: Emotional Analysis of Lyrics
+
+Music is a collective way people share their personal experiences and emotions. People write lyrics that tell unique stories to express their feelings and connect to others. This project mines a trove of lyrics across different genres to find what emotions are expressed most by genre and the overall positive and negative experiences they convey.
+The most common words found through all genres are shown in the wordcloud below. Love is the most frequent word, followed by other emotional words like time, life, baby, heart.
+
+```{r wordcloudimplement, warning=FALSE, message=FALSE,echo=FALSE}
+wordcloud2(word_mapping[word_mapping$n>15000,],size=1,minRotation = -pi/6,maxRotation = pi/6,rotateRatio = 0.4)
+```
+
+We can also examine the positive and negative sentiment by genre. Scores are based on the average negative and positive of words in the lyrics. Several trends are evident. Interestingly, the bar plot below shows that Metal has by far the highest proportion of negative words while also qualifying for one of the highest positive scores. This makes it a truly polarizing genre. Pop is more neutral with low peaks in both the positive and negative directions. Several genres, like Electronic, Hip-Hop, and Indie are balanced, while R&B and pop lean more towards positivity.
+
+```{r barplot sent, fig.height=5, fig.width=8}
+
+lyr_emo1.bars=melt(lyr_emo1.summary, id.vars = c("genre"),
+                measure.vars = c("positive", "negative"))
+
+ggplot(lyr_emo1.bars, aes(x=genre, y=value)) +
+  geom_bar(aes(fill = variable),stat = "identity")+
+
+  labs(title = "Sentiment of Lyrics by Genre")+
+  xlab("Genre") +
+  ylab("Average Sentiment Score")
+
+```
+
+
+We can delve further into the emotional breakdown of these genres. Metal shows a high proportion of emotionally charged words. This fits with its values for sentiment, which show high levels of words with positive and negative connotations. While Metal’s lyrics show a strong level of trust, their most significant attributes are sadness, fear, and anger. This likely contributes to its large negative sentiment score. Country and folk show very similar proportions. Pop shows a very small emotional score. This might be because pop lyrics tend to be about lighter topics and not as overall emotional.
+
+```{r barplot emo, fig.height=5, fig.width=8}
+
+lyr_emo2.bars=melt(lyr_emo.summary, id.vars = c("genre"),
+                measure.vars = colnames(lyr_emo.summary)[2:9])
+
+ggplot(lyr_emo2.bars, aes(x=genre, y=value)) +
+  geom_bar(aes(fill = variable),stat = "identity")+
+
+  labs(title = "Emotional Distribution of Lyrics by Genre")+
+  xlab("Genre") +
+  ylab("Emotional Scores")
+
+```
+
+Using k-means clustering we can group genres by their lyrics and look for similarities. Unsurprisingly, we find that Metal is isolated, very different from other genres. Jazz is also different, which is to be expected because it also uses instrumentation to express itself. Indie, Electronic, Rock and Hip-Hop show similarities as do Country, Folk, and Other. R&B and Pop are alike, which makes sense because they both tend to be more positive proportionately than other genres.
+
+```{r clusterplot, fig.height=5, fig.width=5}
+
+lyr_emo.summary0=as.data.frame(lyr_emo.summary)
+rownames(lyr_emo.summary0)=as.character((lyr_emo.summary0[,1]))
+km.res=kmeans(lyr_emo.summary0[,-1], iter.max=200,
+              5)
+fviz_cluster(km.res, 
+             stand=F, repel= TRUE,
+             data = lyr_emo.summary0[,-1], xlab="", xaxt="n",
+             show.clust.cent=FALSE)
+
+
+```
+
